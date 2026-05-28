@@ -217,6 +217,7 @@ async function fetchData(from, to, filters = {}) {
   const meta = {
     responsibleOptions: [...responsibleMap.entries()]
       .map(([id, name]) => ({ id: String(id), name }))
+      .filter(u => u.name !== "Atendimento Jurídico")
       .sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
     tagOptions: (hasUnfilled ? ["Não preenchido"] : [])
       .concat([...tagSet].sort((a, b) => a.localeCompare(b, "pt-BR"))),
@@ -270,6 +271,7 @@ const HTML = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard CRM — BM Advocacia</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,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">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -306,8 +308,8 @@ const HTML = `<!DOCTYPE html>
       pointer-events: none;
     }
     .header-title h1 { font-size: 1.2rem; font-weight: 600; color: var(--texto); line-height: 1; white-space: nowrap; }
-    .header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
-    .updated { font-size: 0.78rem; color: var(--muted); text-align: right; }
+    .header-right { display: flex; flex-direction: row; align-items: center; gap: 12px; }
+    .updated { font-size: 0.78rem; color: var(--muted); text-align: right; white-space: nowrap; }
 
     #btn-refresh {
       background: var(--bg3); color: var(--texto);
@@ -323,10 +325,14 @@ const HTML = `<!DOCTYPE html>
 
     /* ── Filter bar ─────────────────────────────────────────── */
     .filter-bar {
-      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-      padding: 10px 40px;
       background: var(--bg2); border-bottom: 1px solid var(--borda);
+      padding: 10px 40px;
+      overflow: visible;
     }
+    .filter-scroll {
+      display: flex; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .filter-row { display: contents; }
     .filter-label { font-size: 0.82rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
 
     .period-selector { position: relative; }
@@ -519,39 +525,68 @@ const HTML = `<!DOCTYPE html>
       border-radius: 50%; animation: spin 0.8s linear infinite;
     }
 
+    /* ── Desktop largo ─────────────────────────────────────── */
+    @media (min-width: 1400px) {
+      .summary-bar, .filter-bar { padding-left: 60px; padding-right: 60px; }
+      .pipelines-grid { padding-left: 60px; padding-right: 60px; }
+      header { padding-left: 60px; padding-right: 60px; }
+    }
+
     /* ── Tablet ─────────────────────────────────────────────── */
     @media (max-width: 900px) {
       header { padding: 14px 24px; }
-      .summary-bar, .pipelines-grid { padding-left: 24px; padding-right: 24px; }
-      .filter-bar { padding-left: 24px; padding-right: 24px; }
+      .summary-bar { padding: 16px 24px; }
+      .filter-bar { padding: 10px 24px; }
+      .filter-scroll { gap: 8px; }
+      .pipelines-grid { padding: 0 24px 32px; }
       .pipeline-card { flex: 1 1 300px; max-width: 100%; }
+      .header-title h1 { font-size: 1.05rem; }
     }
 
     /* ── Mobile ─────────────────────────────────────────────── */
     @media (max-width: 640px) {
       body { font-size: 14px; }
-      header { padding: 12px 16px; flex-direction: column; align-items: stretch; gap: 10px; }
-      .header-left { gap: 10px; }
-      .logo-img { height: 36px; }
-      .header-title h1 { font-size: 1.1rem; }
-      .header-right { flex-direction: row; align-items: center; justify-content: space-between; }
-      .updated { text-align: left; }
 
-      .filter-bar { padding: 10px 16px; gap: 8px; }
-      .period-btn { font-size: 0.8rem; padding: 6px 10px; }
-      .custom-dates input[type="date"] { font-size: 16px; }
+      /* Header: logo à esquerda, ícone + hora à direita */
+      header { padding: 10px 16px; }
+      .header-left { gap: 0; }
+      .logo-img { height: 32px; }
+      .header-title { display: none; }       /* título oculto no mobile */
+      .header-right { gap: 10px; flex-shrink: 0; }
+      #btn-refresh { padding: 8px 10px; }
+      .btn-text { display: none; }           /* botão vira só ícone */
+      .upd-label { display: none; }          /* esconde "Atualizado em" */
+      .updated { font-size: 0.72rem; white-space: nowrap; }
 
-      .summary-bar { padding: 12px 16px 0; gap: 10px; }
-      .summary-card { flex: 1 1 calc(50% - 5px); min-width: 0; padding: 14px 14px; }
+      /* Filtros — grade em 3 linhas no mobile */
+      .filter-bar { padding: 8px 16px; overflow: visible; }
+      .filter-scroll { flex-direction: column; gap: 6px; overflow: visible; }
+      .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; overflow: visible; }
+      .filter-label { font-size: 0.78rem; white-space: nowrap; }
+      .period-btn { font-size: 0.78rem; padding: 6px 9px; white-space: nowrap; }
+      .custom-dates { flex-wrap: nowrap; }
+      .custom-dates input[type="date"] { font-size: 16px; min-width: 120px; }
+
+      /* Cards resumo: 2 colunas */
+      .summary-bar { padding: 12px 16px; gap: 8px; }
+      .summary-card { flex: 1 1 calc(50% - 4px); min-width: 0; padding: 12px 12px 0; }
+      .summary-card .label { font-size: 0.63rem; }
       .summary-card .value { font-size: 1.6rem; }
+      .card-pct { font-size: 0.66rem; padding: 2px 6px; }
+      .card-bottom { margin-top: 8px; }
 
-      .pipelines-grid { padding: 12px 16px 32px; gap: 12px; }
+      /* Pipeline grid */
+      .pipelines-grid { padding: 8px 16px 32px; gap: 10px; }
       .pipeline-card { flex: 1 1 100%; max-width: 100%; }
+      .pipeline-header { padding: 12px 16px 10px; }
+      .pipeline-header h3 { font-size: 0.88rem; }
+      .stages-list { padding: 8px 12px 14px; gap: 5px; }
+      .stage-row { min-height: 44px; padding: 4px 6px; margin: 0 -6px; } /* 44px = tap-target mínimo */
+      .stage-right { min-width: 88px; gap: 6px; }
+      .stage-name { font-size: 0.79rem; }
+      .stage-count { font-size: 0.79rem; min-width: 20px; }
 
-      .stages-list { padding: 10px 14px 14px; gap: 6px; }
-      .stage-row { min-height: 40px; }
-      .stage-left { min-width: 0; }
-
+      /* Painel de leads: sobe do rodapé */
       #leads-panel {
         width: 100%; right: 0;
         top: auto; height: 85vh;
@@ -560,7 +595,14 @@ const HTML = `<!DOCTYPE html>
         bottom: -100vh; transition: bottom 0.25s ease;
       }
       #leads-panel.open { bottom: 0; }
-      .lead-item { padding: 10px 16px; }
+      .panel-header { padding: 16px 16px; }
+      .lead-item { padding: 12px 16px; min-height: 44px; }
+    }
+
+    /* ── Telas muito pequenas (< 380px) ─────────────────────── */
+    @media (max-width: 380px) {
+      .header-title { display: none; }
+      .summary-card { flex: 1 1 100%; }
     }
   </style>
 </head>
@@ -583,78 +625,81 @@ const HTML = `<!DOCTYPE html>
           <polyline points="23 4 23 10 17 10"></polyline>
           <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
         </svg>
-        Atualizar
+        <span class="btn-text">Atualizar</span>
       </button>
       <div class="updated" id="updated-at">—</div>
     </div>
   </header>
 
   <div class="filter-bar">
-    <span class="filter-label">Lead criado:</span>
-    <div class="period-selector" id="period-selector">
-      <button class="period-btn" id="period-btn" onclick="toggleDropdown()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span id="period-label">Este mês, até agora</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <div class="period-dropdown hidden" id="period-dropdown">
-        <div class="period-option" onclick="selectPeriod('all')">Todos os leads</div>
-        <div class="period-option" onclick="selectPeriod('today')">Hoje</div>
-        <div class="period-option" onclick="selectPeriod('yesterday')">Ontem</div>
-        <div class="period-option" onclick="selectPeriod('week')">Esta semana</div>
-        <div class="period-option" onclick="selectPeriod('month')">Este mês, até agora</div>
-        <div class="period-option" onclick="selectPeriod('year')">Este ano, até agora</div>
-        <div class="period-option" onclick="selectPeriod('last_month')">Mês passado</div>
-        <div class="period-option" onclick="selectPeriod('last_year')">Ano passado</div>
-        <div class="period-divider"></div>
-        <div class="period-option period-custom-opt" onclick="selectPeriod('custom')">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-          Período fixo (personalizado)
+    <div class="filter-scroll">
+      <div class="filter-row">
+        <span class="filter-label">Lead criado:</span>
+        <div class="period-selector" id="period-selector">
+          <button class="period-btn" id="period-btn" onclick="toggleDropdown()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <span id="period-label">Este mês, até agora</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="period-dropdown hidden" id="period-dropdown">
+            <div class="period-option" onclick="selectPeriod('all')">Todos os leads</div>
+            <div class="period-option" onclick="selectPeriod('today')">Hoje</div>
+            <div class="period-option" onclick="selectPeriod('yesterday')">Ontem</div>
+            <div class="period-option" onclick="selectPeriod('week')">Esta semana</div>
+            <div class="period-option" onclick="selectPeriod('month')">Este mês, até agora</div>
+            <div class="period-option" onclick="selectPeriod('year')">Este ano, até agora</div>
+            <div class="period-option" onclick="selectPeriod('last_month')">Mês passado</div>
+            <div class="period-option" onclick="selectPeriod('last_year')">Ano passado</div>
+            <div class="period-divider"></div>
+            <div class="period-option period-custom-opt" onclick="selectPeriod('custom')">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              Período fixo (personalizado)
+            </div>
+          </div>
+        </div>
+        <div class="custom-dates hidden" id="custom-dates">
+          <input type="date" id="filter-from">
+          <span style="color:#94a3b8;font-size:0.8rem">→</span>
+          <input type="date" id="filter-to">
+          <button class="btn-apply" onclick="applyCustom()">Aplicar</button>
         </div>
       </div>
+
+      <div class="filter-row">
+        <div class="sel-selector" id="sel-responsible">
+          <span class="filter-label">Responsável:</span>
+          <button class="period-btn" id="btn-responsible" onclick="toggleSel('responsible',event)">
+            <span id="lbl-responsible">Todos</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="period-dropdown hidden" id="dd-responsible"></div>
+        </div>
+
+        <div class="sel-selector" id="sel-tag">
+          <span class="filter-label">Origem:</span>
+          <button class="period-btn" id="btn-tag" onclick="toggleSel('tag',event)">
+            <span id="lbl-tag">Todas</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="period-dropdown hidden" id="dd-tag"></div>
+        </div>
+      </div>
+
+      <div class="filter-row">
+        <div class="sel-selector" id="sel-product">
+          <span class="filter-label">Produto Jurídico:</span>
+          <button class="period-btn" id="btn-product" onclick="toggleSel('product',event)">
+            <span id="lbl-product">Todos</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="period-dropdown hidden" id="dd-product"></div>
+        </div>
+
+        <button class="btn-reset" id="btn-reset" onclick="resetFilter()" title="Limpar filtro">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="custom-dates hidden" id="custom-dates">
-      <input type="date" id="filter-from">
-      <span style="color:#94a3b8;font-size:0.8rem">→</span>
-      <input type="date" id="filter-to">
-      <button class="btn-apply" onclick="applyCustom()">Aplicar</button>
-    </div>
-    <div class="filter-sep"></div>
-
-    <div class="sel-selector" id="sel-responsible">
-      <span class="filter-label">Responsável:</span>
-      <button class="period-btn" id="btn-responsible" onclick="toggleSel('responsible',event)">
-        <span id="lbl-responsible">Todos</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <div class="period-dropdown hidden" id="dd-responsible"></div>
-    </div>
-
-    <div class="filter-sep"></div>
-
-    <div class="sel-selector" id="sel-tag">
-      <span class="filter-label">Origem:</span>
-      <button class="period-btn" id="btn-tag" onclick="toggleSel('tag',event)">
-        <span id="lbl-tag">Todas</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <div class="period-dropdown hidden" id="dd-tag"></div>
-    </div>
-
-    <div class="filter-sep"></div>
-
-    <div class="sel-selector" id="sel-product">
-      <span class="filter-label">Produto Jurídico:</span>
-      <button class="period-btn" id="btn-product" onclick="toggleSel('product',event)">
-        <span id="lbl-product">Todos</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
-      <div class="period-dropdown hidden" id="dd-product"></div>
-    </div>
-
-    <button class="btn-reset" id="btn-reset" onclick="resetFilter()" title="Limpar filtro">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-    </button>
   </div>
 
   <div class="summary-bar" id="summary-bar"></div>
@@ -682,10 +727,25 @@ const HTML = `<!DOCTYPE html>
     const SEL_NAMES = ['responsible', 'tag', 'product'];
     let currentFilters = { responsible: new Set(), tag: new Set(), product: new Set() };
 
+    function positionDropdown(btn, dd) {
+      if (window.innerWidth <= 640) {
+        const r = btn.getBoundingClientRect();
+        dd.style.position = 'fixed';
+        dd.style.top  = (r.bottom + 4) + 'px';
+        dd.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 234)) + 'px';
+        dd.style.minWidth = '230px';
+        dd.style.zIndex = '9999';
+      } else {
+        dd.style.position = dd.style.top = dd.style.left = dd.style.minWidth = dd.style.zIndex = '';
+      }
+    }
+
     function toggleSel(name, e) {
       e.stopPropagation();
       SEL_NAMES.forEach(n => { if (n !== name) document.getElementById('dd-' + n).classList.add('hidden'); });
-      document.getElementById('dd-' + name).classList.toggle('hidden');
+      const dd = document.getElementById('dd-' + name);
+      dd.classList.toggle('hidden');
+      if (!dd.classList.contains('hidden')) positionDropdown(document.getElementById('btn-' + name), dd);
     }
 
     function toggleFilter(name, val) {
@@ -857,7 +917,7 @@ const HTML = `<!DOCTYPE html>
         })();
 
       document.getElementById('pipelines-grid').innerHTML = buildGrid(pipelines, null);
-      document.getElementById('updated-at').innerHTML = 'Atualizado em<br><strong>' + formatDate(new Date()) + '</strong>';
+      document.getElementById('updated-at').innerHTML = '<span class="upd-label">Atualizado em </span><strong>' + formatDate(new Date()) + '</strong>';
 
       if (data.meta) {
         populateSel('responsible', data.meta.responsibleOptions);
@@ -906,6 +966,7 @@ const HTML = `<!DOCTYPE html>
       const pb = document.getElementById('period-btn');
       dd.classList.toggle('hidden');
       pb.classList.toggle('open', !dd.classList.contains('hidden'));
+      if (!dd.classList.contains('hidden')) positionDropdown(pb, dd);
     }
 
     function selectPeriod(key) {
