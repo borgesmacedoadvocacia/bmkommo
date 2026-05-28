@@ -846,7 +846,12 @@ const HTML = `<!DOCTYPE html>
       custom:     { label: 'Período personalizado' },
     };
 
-    function fmt(d) { return d.toISOString().slice(0, 10); }
+    function fmt(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
 
     function getDates(key) {
       const now = new Date();
@@ -1013,8 +1018,8 @@ const server = http.createServer(async (req, res) => {
   } else if (req.url.startsWith("/api/data")) {
     try {
       const qs = new URL(req.url, "http://localhost").searchParams;
-      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00").getTime() / 1000) : null;
-      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59").getTime() / 1000) : null;
+      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00Z").getTime() / 1000) : null;
+      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59Z").getTime() / 1000) : null;
       const filters = {
         responsibleIds: qs.get("responsible_id") ? qs.get("responsible_id").split(",").filter(Boolean) : null,
         tags:           qs.get("tag")            ? qs.get("tag").split(",").filter(Boolean)            : null,
@@ -1033,8 +1038,8 @@ const server = http.createServer(async (req, res) => {
       const qs = new URL(req.url, "http://localhost").searchParams;
       const statusId   = qs.get("status_id");
       const pipelineId = qs.get("pipeline_id");
-      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00").getTime() / 1000) : null;
-      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59").getTime() / 1000) : null;
+      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00Z").getTime() / 1000) : null;
+      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59Z").getTime() / 1000) : null;
       const [leads, users] = await Promise.all([
         fetchStageLeads(statusId, pipelineId, from, to),
         getUsers(),
