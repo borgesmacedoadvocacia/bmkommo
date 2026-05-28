@@ -1018,8 +1018,12 @@ const server = http.createServer(async (req, res) => {
   } else if (req.url.startsWith("/api/data")) {
     try {
       const qs = new URL(req.url, "http://localhost").searchParams;
-      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00Z").getTime() / 1000) : null;
-      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59Z").getTime() / 1000) : null;
+      // Ajuste de fuso horário: Brasil é UTC-3 (3h atrás do UTC)
+      // Somamos 3h ao from/to em UTC para representar meia-noite no Brasil
+      const BRT_OFFSET = 3 * 3600;
+      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00Z").getTime() / 1000) + BRT_OFFSET : null;
+      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59Z").getTime() / 1000) + BRT_OFFSET : null;
+      if (from) console.log(`[api/data] from=${from} (${new Date(from * 1000).toISOString()}) to=${to} (${new Date(to * 1000).toISOString()})`);
       const filters = {
         responsibleIds: qs.get("responsible_id") ? qs.get("responsible_id").split(",").filter(Boolean) : null,
         tags:           qs.get("tag")            ? qs.get("tag").split(",").filter(Boolean)            : null,
