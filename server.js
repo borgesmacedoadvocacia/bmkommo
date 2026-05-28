@@ -392,19 +392,31 @@ const HTML = `<!DOCTYPE html>
     .sel-text { flex: 1; min-width: 0; }
 
     /* ── Summary cards ──────────────────────────────────────── */
-    .summary-bar { display: flex; gap: 16px; padding: 20px 40px; flex-wrap: wrap; }
+    .summary-bar { display: flex; gap: 14px; padding: 20px 40px; flex-wrap: wrap; align-items: stretch; }
     .summary-card {
-      background: var(--bg2); border-radius: var(--radius); padding: 18px 24px;
-      flex: 1; min-width: 180px;
+      background: var(--bg2); border-radius: var(--radius); padding: 16px 20px 0;
+      flex: 1; min-width: 170px;
       box-shadow: var(--shadow);
       border: 1px solid var(--borda);
-      border-top: 4px solid var(--azul);
+      display: flex; flex-direction: column; overflow: hidden;
     }
     .summary-card .label {
-      font-size: 0.78rem; color: var(--muted);
-      text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+      font-size: 0.72rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700;
+      line-height: 1.3;
     }
-    .summary-card .value { font-size: 2rem; font-weight: 800; color: var(--texto); margin-top: 8px; }
+    .card-bottom { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 10px; gap: 8px; padding-bottom: 14px; }
+    .summary-card .value { font-size: 2.1rem; font-weight: 800; color: var(--texto); line-height: 1; }
+    .card-pct {
+      font-size: 0.75rem; font-weight: 700; white-space: nowrap;
+      padding: 3px 8px; border-radius: 20px; margin-bottom: 4px;
+    }
+    .pct-high  { background: rgba(74,222,128,0.12);  color: #4ade80; }
+    .pct-mid   { background: rgba(250,204,21,0.12);  color: #facc15; }
+    .pct-low   { background: rgba(251,146,60,0.12);  color: #fb923c; }
+    .pct-vlow  { background: rgba(248,113,113,0.12); color: #f87171; }
+    .card-bar-wrap { height: 3px; background: var(--bg3); margin-top: auto; }
+    .card-bar-fill { height: 100%; border-radius: 0 2px 2px 0; transition: width 0.5s ease; }
 
     .special-card { cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
     .special-card:hover { border-color: var(--azul-cl); box-shadow: 0 0 0 3px rgba(37,99,235,0.15); }
@@ -815,13 +827,34 @@ const HTML = `<!DOCTYPE html>
         'Qualificados (Aguardando Documentação)',
       ];
       document.getElementById('summary-bar').innerHTML =
-        \`<div class="summary-card"><div class="label">Total de Leads</div><div class="value">\${totalLeads}</div></div>\` +
-        specials.map(key => \`
-          <div class="summary-card special-card" data-key="\${key}" onclick="selectSpecialCard('\${key}')">
-            <div class="label">\${key}</div>
-            <div class="value">\${sc[key] ?? '—'}</div>
-          </div>
-        \`).join('');
+        \`<div class="summary-card" style="border-top:4px solid var(--azul)">
+           <div class="label">Total de Leads</div>
+           <div class="card-bottom"><div class="value">\${totalLeads}</div></div>
+           <div class="card-bar-wrap"><div class="card-bar-fill" style="width:100%;background:var(--azul)"></div></div>
+         </div>\` +
+        (() => {
+          let prevVal = totalLeads;
+          return specials.map(key => {
+            const val = sc[key] ?? null;
+            const pctNum = (val !== null && prevVal > 0) ? (val / prevVal * 100) : null;
+            const pctStr = pctNum !== null
+              ? pctNum.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+              : null;
+            const pctClass = pctNum === null ? '' : pctNum >= 80 ? 'pct-high' : pctNum >= 50 ? 'pct-mid' : pctNum >= 20 ? 'pct-low' : 'pct-vlow';
+            const barColor  = pctNum === null ? 'var(--muted)' : pctNum >= 80 ? '#4ade80' : pctNum >= 50 ? '#facc15' : pctNum >= 20 ? '#fb923c' : '#f87171';
+            prevVal = val ?? prevVal;
+            return \`
+              <div class="summary-card special-card" data-key="\${key}" onclick="selectSpecialCard('\${key}')" style="border-top:4px solid \${barColor}">
+                <div class="label">\${key}</div>
+                <div class="card-bottom">
+                  \${pctStr !== null ? \`<span class="card-pct \${pctClass}">\${pctStr}%&nbsp;→</span>\` : ''}
+                  <div class="value">\${val ?? '—'}</div>
+                </div>
+                <div class="card-bar-wrap"><div class="card-bar-fill" style="width:\${pctNum ?? 0}%;background:\${barColor}"></div></div>
+              </div>
+            \`;
+          }).join('');
+        })();
 
       document.getElementById('pipelines-grid').innerHTML = buildGrid(pipelines, null);
       document.getElementById('updated-at').innerHTML = 'Atualizado em<br><strong>' + formatDate(new Date()) + '</strong>';
