@@ -413,10 +413,12 @@ const HTML = `<!DOCTYPE html>
 
     /* ── Pipeline grid ──────────────────────────────────────── */
     .pipelines-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
       gap: 16px; padding: 0 40px 40px;
     }
+    .pipeline-card { flex: 1 1 420px; max-width: 500px; }
     .pipeline-card {
       background: var(--bg2); border-radius: var(--radius);
       border: 1px solid var(--borda); box-shadow: var(--shadow); overflow: hidden;
@@ -440,10 +442,10 @@ const HTML = `<!DOCTYPE html>
       transition: background 0.12s;
     }
     .stage-row:hover { background: var(--bg3); }
-    .stage-left { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; max-width: 45%; }
-    .stage-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-    .stage-name { font-size: 0.83rem; color: var(--texto); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .stage-right { display: flex; align-items: center; gap: 10px; flex: 1; }
+    .stage-left { display: flex; align-items: flex-start; gap: 8px; flex: 1 1 auto; min-width: 0; }
+    .stage-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; }
+    .stage-name { font-size: 0.83rem; color: var(--texto); white-space: normal; word-break: break-word; line-height: 1.35; }
+    .stage-right { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; min-width: 110px; }
     .bar-wrap { flex: 1; background: var(--bg3); border-radius: 99px; height: 6px; overflow: hidden; }
     .bar-fill { height: 100%; border-radius: 99px; min-width: 4px; transition: width 0.4s ease; }
     .stage-count { font-size: 0.83rem; font-weight: 700; color: var(--texto); min-width: 24px; text-align: right; }
@@ -510,7 +512,7 @@ const HTML = `<!DOCTYPE html>
       header { padding: 14px 24px; }
       .summary-bar, .pipelines-grid { padding-left: 24px; padding-right: 24px; }
       .filter-bar { padding-left: 24px; padding-right: 24px; }
-      .pipelines-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+      .pipeline-card { flex: 1 1 300px; max-width: 100%; }
     }
 
     /* ── Mobile ─────────────────────────────────────────────── */
@@ -531,11 +533,12 @@ const HTML = `<!DOCTYPE html>
       .summary-card { flex: 1 1 calc(50% - 5px); min-width: 0; padding: 14px 14px; }
       .summary-card .value { font-size: 1.6rem; }
 
-      .pipelines-grid { padding: 12px 16px 32px; grid-template-columns: 1fr; gap: 12px; }
+      .pipelines-grid { padding: 12px 16px 32px; gap: 12px; }
+      .pipeline-card { flex: 1 1 100%; max-width: 100%; }
 
       .stages-list { padding: 10px 14px 14px; gap: 6px; }
       .stage-row { min-height: 40px; }
-      .stage-left { max-width: 50%; }
+      .stage-left { min-width: 0; }
 
       #leads-panel {
         width: 100%; right: 0;
@@ -643,7 +646,6 @@ const HTML = `<!DOCTYPE html>
   </div>
 
   <div class="summary-bar" id="summary-bar"></div>
-  <div class="summary-bar" id="special-bar"></div>
   <div class="pipelines-grid" id="pipelines-grid"></div>
 
   <div class="panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
@@ -805,11 +807,6 @@ const HTML = `<!DOCTYPE html>
       const { pipelines, totalLeads, specialCounts } = data;
       const activePipelines = Object.values(pipelines).filter(p => p.total_leads > 0).length;
 
-      document.getElementById('summary-bar').innerHTML = \`
-        <div class="summary-card"><div class="label">Total de Leads</div><div class="value">\${totalLeads}</div></div>
-        <div class="summary-card"><div class="label">Funis Ativos</div><div class="value">\${activePipelines}</div></div>
-      \`;
-
       const sc = specialCounts || {};
       const specials = [
         'Responderam a Triagem',
@@ -817,12 +814,14 @@ const HTML = `<!DOCTYPE html>
         'Responderam a Qualificação',
         'Qualificados (Aguardando Documentação)',
       ];
-      document.getElementById('special-bar').innerHTML = specials.map(key => \`
-        <div class="summary-card special-card" data-key="\${key}" onclick="selectSpecialCard('\${key}')">
-          <div class="label">\${key}</div>
-          <div class="value">\${sc[key] ?? '—'}</div>
-        </div>
-      \`).join('');
+      document.getElementById('summary-bar').innerHTML =
+        \`<div class="summary-card"><div class="label">Total de Leads</div><div class="value">\${totalLeads}</div></div>\` +
+        specials.map(key => \`
+          <div class="summary-card special-card" data-key="\${key}" onclick="selectSpecialCard('\${key}')">
+            <div class="label">\${key}</div>
+            <div class="value">\${sc[key] ?? '—'}</div>
+          </div>
+        \`).join('');
 
       document.getElementById('pipelines-grid').innerHTML = buildGrid(pipelines, null);
       document.getElementById('updated-at').innerHTML = 'Atualizado em<br><strong>' + formatDate(new Date()) + '</strong>';
