@@ -125,14 +125,18 @@ async function fetchData(from, to, filters = {}) {
     };
   }
 
-  // Mapa pipeline_name -> { id, stages: { stage_name -> stage_id } }
+  // Mapa pipeline_name -> { stage_name -> [stageId, ...] }
+  // Usa pipelineData (pipelines exibidos) para garantir mapeamento correto,
+  // mesmo que haja múltiplos pipelines com o mesmo nome no Kommo.
   const pipelineByName = {};
-  for (const pipeline of pipelines) {
-    const stages = {};
-    for (const s of pipeline._embedded?.statuses || []) {
-      stages[s.name.trim()] = s.id;
+  for (const [pid, pdata] of Object.entries(pipelineData)) {
+    const name = pdata.name.trim();
+    if (!pipelineByName[name]) pipelineByName[name] = { stages: {} };
+    for (const [sid, stage] of Object.entries(pdata.stages)) {
+      const sname = stage.name.trim();
+      if (!pipelineByName[name].stages[sname]) pipelineByName[name].stages[sname] = [];
+      pipelineByName[name].stages[sname].push(Number(sid));
     }
-    pipelineByName[pipeline.name.trim()] = { id: pipeline.id, stages };
   }
 
   function buildIds(rules) {
@@ -140,22 +144,23 @@ async function fetchData(from, to, filters = {}) {
     for (const [pName, excluidos] of Object.entries(rules)) {
       const p = pipelineByName[pName];
       if (!p) continue;
-      for (const [stageName, stageId] of Object.entries(p.stages)) {
-        if (!excluidos.map(e => e.trim().toLowerCase()).includes(stageName.trim().toLowerCase()))
-          ids.add(stageId);
+      const excLower = excluidos.map(e => e.trim().toLowerCase());
+      for (const [stageName, stageIds] of Object.entries(p.stages)) {
+        if (!excLower.includes(stageName.trim().toLowerCase()))
+          for (const sid of stageIds) ids.add(sid);
       }
     }
     return ids;
   }
 
   const triagemIds = buildIds({
-    "[API] CRM Comercial": ["Entrada de Leads", "NÃO RESPONDEU A TRIAGEM", "Closed - won", "Closed - lost"],
+    "[API] CRM Comercial": ["Não responderam a triagem", "Closed - won", "Closed - lost"],
     "[SP] CRM Comercial":  ["Entrada de Leads", "1º Contato", "Respondeu FUP 1º Contato", "Venda ganha", "Venda perdida", "Sem resposta: ELEGIBILIDADE"],
     "[API] Follow Up":     [],
   });
 
   const elegiveisIds = buildIds({
-    "[API] CRM Comercial": ["Entrada de Leads", "Aguardando Forms", "Quer atendimento (Inelegível)", "NÃO RESPONDEU A TRIAGEM", "Inelegível", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Closed - won", "Closed - lost"],
+    "[API] CRM Comercial": ["Entrada de Leads", "Aguardando Forms", "Quer atendimento (Inelegível)", "Não responderam a TRIAGEM", "Inelegível", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Closed - won", "Closed - lost"],
     "[SP] CRM Comercial":  ["Entrada de Leads", "1º Contato", "Respondeu FUP 1º Contato", "Inelegível", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Venda ganha", "Venda perdida"],
     "[API] Follow Up":     [],
   });
@@ -168,13 +173,13 @@ async function fetchData(from, to, filters = {}) {
   };
 
   const qualificacaoIds = buildIds({
-    "[API] CRM Comercial": ["Entrada de Leads", "Aguardando Forms", "Quer atendimento (Inelegível)", "Elegíveis", "Análise de Qualificação", "Respondeu FUP Qualificação", "NÃO RESPONDEU A TRIAGEM", "Inelegível", "Sem resposta: QUALIFICAÇÃO", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Closed - won", "Closed - lost"],
+    "[API] CRM Comercial": ["Entrada de Leads", "Aguardando Forms", "Quer atendimento (Inelegível)", "Elegíveis", "Análise de Qualificação", "Respondeu FUP Qualificação", "Não responderam a TRIAGEM", "Inelegível", "Sem resposta: QUALIFICAÇÃO", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Closed - won", "Closed - lost"],
     "[SP] CRM Comercial":  ["Entrada de Leads", "1º Contato", "Respondeu FUP 1º Contato", "Análise de Qualificação", "Respondeu FUP Qualificação", "Inelegível", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Sem resposta: QUALIFICAÇÃO", "Venda ganha", "Venda perdida"],
     "[API] Follow Up":     ["FUP 1 - Qualificação", "FUP 2 - Qualificação", "FUP 3 - Qualificação", "FUP 4 - Qualificação", "FUP 5 - Qualificação", "FUP 6 - Qualificação", "FUP 7 - Qualificação", "FUP 8 - Qualificação", "Closed - won", "Closed - lost"],
   });
 
   const qualificadosIds = buildIds({
-    "[API] CRM Comercial": ["Entrada de Leads", "Aguardando Forms", "Quer atendimento (Inelegível)", "Elegíveis", "Análise de Qualificação", "Respondeu FUP Qualificação", "NÃO RESPONDEU A TRIAGEM", "Inelegível", "Desqualificado", "Sem resposta: QUALIFICAÇÃO", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Closed - won", "Closed - lost"],
+    "[API] CRM Comercial": ["Entrada de Leads", "Aguardando Forms", "Quer atendimento (Inelegível)", "Elegíveis", "Análise de Qualificação", "Respondeu FUP Qualificação", "Não responderam a TRIAGEM", "Inelegível", "Desqualificado", "Sem resposta: QUALIFICAÇÃO", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Closed - won", "Closed - lost"],
     "[SP] CRM Comercial":  ["Entrada de Leads", "1º Contato", "Respondeu FUP 1º Contato", "Análise de Qualificação", "Respondeu FUP Qualificação", "Inelegível", "Desqualificado", "Lead Perdido: Outros Motivos", "Sem resposta: ELEGIBILIDADE", "Sem resposta: QUALIFICAÇÃO", "Venda ganha", "Venda perdida"],
     "[API] Follow Up":     ["FUP 1 - Qualificação", "FUP 2 - Qualificação", "FUP 3 - Qualificação", "FUP 4 - Qualificação", "FUP 5 - Qualificação", "FUP 6 - Qualificação", "FUP 7 - Qualificação", "FUP 8 - Qualificação", "Closed - won", "Closed - lost"],
   });
