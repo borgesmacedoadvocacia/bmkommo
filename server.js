@@ -389,11 +389,73 @@ const HTML = `<!DOCTYPE html>
     }
     .btn-reset:hover { background: #e2e8f0; color: #1e293b; }
 
-    @media (max-width: 600px) {
-      header { padding: 20px; flex-direction: column; align-items: flex-start; gap: 12px; }
-      .filter-bar { padding: 14px 16px; }
-      .summary-bar, .pipelines-grid { padding: 16px; }
-      .pipelines-grid { grid-template-columns: 1fr; }
+    /* ── Tablet ────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      header { padding: 20px 24px; }
+      .summary-bar, .pipelines-grid { padding-left: 24px; padding-right: 24px; }
+      .filter-bar { padding-left: 24px; padding-right: 24px; }
+      .pipelines-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+    }
+
+    /* ── Mobile ────────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      header {
+        padding: 16px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+      }
+      header h1 { font-size: 1.35rem; }
+      .header-right {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .updated { text-align: left; }
+
+      .filter-bar {
+        padding: 10px 16px;
+        gap: 8px;
+      }
+      .period-btn { font-size: 0.8rem; padding: 6px 10px; }
+      .period-dropdown { min-width: 200px; }
+      .custom-dates { gap: 6px; }
+      .custom-dates input[type="date"] { font-size: 0.78rem; padding: 5px 7px; }
+
+      .summary-bar, .pipelines-grid { padding: 12px 16px; gap: 12px; }
+      .summary-bar { padding-bottom: 0; }
+
+      .summary-card {
+        flex: 1 1 calc(50% - 6px);
+        min-width: 0;
+        padding: 14px 16px;
+      }
+      .summary-card .value { font-size: 1.6rem; }
+
+      .pipelines-grid {
+        padding-top: 12px;
+        grid-template-columns: 1fr;
+      }
+
+      .stages-list { padding: 10px 16px 14px; gap: 8px; }
+      .stage-row { min-height: 40px; padding: 4px 6px; margin: 0 -6px; }
+      .stage-left { max-width: 50%; }
+      .stage-name { font-size: 0.82rem; }
+      .bar-wrap { height: 7px; }
+
+      /* Painel lateral: largura total no mobile */
+      #leads-panel {
+        width: 100%;
+        right: -100%;
+        border-radius: 16px 16px 0 0;
+        top: auto;
+        bottom: -100vh;
+        height: 85vh;
+        right: 0;
+        transition: bottom 0.25s ease;
+      }
+      #leads-panel.open { bottom: 0; right: 0; }
+      .lead-item { padding: 10px 16px; }
     }
   </style>
 </head>
