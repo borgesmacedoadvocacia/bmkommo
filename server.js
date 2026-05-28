@@ -563,7 +563,7 @@ const HTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="header-right">
-      <button id="btn-refresh" onclick="refresh()">
+      <button id="btn-refresh" onclick="refresh(currentFrom, currentTo)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="23 4 23 10 17 10"></polyline>
           <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
