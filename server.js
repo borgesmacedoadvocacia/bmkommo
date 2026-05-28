@@ -98,7 +98,7 @@ async function fetchAllLeads(from, to) {
   return leads;
 }
 
-async function fetchData(from, to) {
+async function fetchData(from, to, filters = {}) {
   const label = from || to ? `de ${from} até ${to}` : "todos";
   console.log(`[kommo] Buscando dados (${label})...`);
   const [pipelinesRes, leads] = await Promise.all([
@@ -179,7 +179,63 @@ async function fetchData(from, to) {
     "[API] Follow Up":     ["FUP 1 - Qualificação", "FUP 2 - Qualificação", "FUP 3 - Qualificação", "FUP 4 - Qualificação", "FUP 5 - Qualificação", "FUP 6 - Qualificação", "FUP 7 - Qualificação", "FUP 8 - Qualificação", "Closed - won", "Closed - lost"],
   });
 
+  // ── Coleta meta para dropdowns ──────────────────────────
+  const usersMap = await getUsers();
+  const responsibleMap = new Map();
+  const tagSet = new Set();
+  const productSet = new Set();
+  const ORIGIN_KEYS  = ["origem", "origin", "fonte", "source"];
+  const PRODUCT_KEYS = ["produto", "product", "serviço", "servico", "área", "area", "tipo de serv"];
+  let hasUnfilled = false;
+
   for (const lead of leads) {
+    const uid = lead.responsible_user_id;
+    if (uid && usersMap[uid]) responsibleMap.set(uid, usersMap[uid]);
+
+    // Origem: campo customizado
+    const originVals = (lead.custom_fields_values || [])
+      .filter(cf => ORIGIN_KEYS.some(k => (cf.field_name || "").toLowerCase().includes(k)))
+      .flatMap(cf => (cf.values || []).map(v => v.value).filter(Boolean));
+    if (originVals.length) originVals.forEach(v => tagSet.add(v));
+    else hasUnfilled = true;
+
+    for (const cf of lead.custom_fields_values || []) {
+      const fname = (cf.field_name || "").toLowerCase();
+      if (PRODUCT_KEYS.some(k => fname.includes(k))) {
+        for (const v of cf.values || []) {
+          if (v.value && typeof v.value === "string") productSet.add(v.value);
+        }
+      }
+    }
+  }
+
+  const meta = {
+    responsibleOptions: [...responsibleMap.entries()]
+      .map(([id, name]) => ({ id: String(id), name }))
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
+    tagOptions: (hasUnfilled ? ["Não preenchido"] : [])
+      .concat([...tagSet].sort((a, b) => a.localeCompare(b, "pt-BR"))),
+    productOptions: [...productSet].sort((a, b) => a.localeCompare(b, "pt-BR")),
+  };
+
+  // ── Aplica filtros adicionais ────────────────────────────
+  const { responsibleIds, tags, products } = filters;
+  let filteredLeads = leads;
+  if (responsibleIds?.length) filteredLeads = filteredLeads.filter(l => responsibleIds.includes(String(l.responsible_user_id)));
+  if (tags?.length) {
+    const wantUnfilled = tags.includes("Não preenchido");
+    const normalTags   = tags.filter(t => t !== "Não preenchido");
+    filteredLeads = filteredLeads.filter(l => {
+      const originVals = (l.custom_fields_values || [])
+        .filter(cf => ORIGIN_KEYS.some(k => (cf.field_name || "").toLowerCase().includes(k)))
+        .flatMap(cf => (cf.values || []).map(v => v.value).filter(Boolean));
+      if (originVals.length === 0) return wantUnfilled;
+      return normalTags.some(t => originVals.includes(t));
+    });
+  }
+  if (products?.length) filteredLeads = filteredLeads.filter(l => l.custom_fields_values?.some(cf => cf.values?.some(v => products.includes(v.value))));
+
+  for (const lead of filteredLeads) {
     const pid = lead.pipeline_id;
     const sid = lead.status_id;
     if (pipelineData[pid]?.stages[sid] !== undefined) {
@@ -199,7 +255,8 @@ async function fetchData(from, to) {
     "Qualificados (Aguardando Documentação)": [...qualificadosIds],
   };
 
-  return { pipelines: pipelineData, totalLeads: leads.length, specialCounts, specialIds };
+  const totalLeads = Object.values(pipelineData).reduce((sum, p) => sum + p.total_leads, 0);
+  return { pipelines: pipelineData, totalLeads, specialCounts, specialIds, meta };
 }
 
 const HTML = `<!DOCTYPE html>
@@ -239,8 +296,11 @@ const HTML = `<!DOCTYPE html>
     }
     .header-left { display: flex; align-items: center; gap: 14px; }
     .logo-img { height: 44px; width: auto; display: block; }
-    .header-title h1 { font-size: 1.25rem; font-weight: 700; color: var(--texto); }
-    .header-title p  { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+    .header-title {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      pointer-events: none;
+    }
+    .header-title h1 { font-size: 1.2rem; font-weight: 600; color: var(--texto); line-height: 1; white-space: nowrap; }
     .header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
     .updated { font-size: 0.78rem; color: var(--muted); text-align: right; }
 
@@ -310,6 +370,21 @@ const HTML = `<!DOCTYPE html>
       transition: color 0.15s;
     }
     .btn-reset:hover { color: var(--texto); border-color: var(--azul-cl); }
+
+    .filter-sep { width: 1px; height: 18px; background: var(--borda); margin: 0 2px; flex-shrink: 0; }
+    .sel-selector { position: relative; display: flex; align-items: center; gap: 6px; }
+    .period-dropdown { max-height: 300px; overflow-y: auto; overflow-x: hidden; }
+    .sel-opt { display: flex; align-items: center; gap: 9px; }
+    .sel-check {
+      width: 15px; height: 15px; flex-shrink: 0;
+      border: 1.5px solid var(--borda); border-radius: 3px;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .sel-opt.active .sel-check { background: var(--azul); border-color: var(--azul); }
+    .sel-chk-icon { width: 9px; height: 7px; opacity: 0; transition: opacity 0.1s; }
+    .sel-opt.active .sel-chk-icon { opacity: 1; }
+    .sel-text { flex: 1; min-width: 0; }
 
     /* ── Summary cards ──────────────────────────────────────── */
     .summary-bar { display: flex; gap: 16px; padding: 20px 40px; flex-wrap: wrap; }
@@ -479,8 +554,7 @@ const HTML = `<!DOCTYPE html>
     <div class="header-left">
       <img src="https://borgesmacedoadvocacia.github.io/dashboard/logo.png" alt="BM Advocacia" class="logo-img">
       <div class="header-title">
-        <h1>Dashboard CRM</h1>
-        <p>BM Advocacia — Kommo CRM</p>
+        <h1>Kommo CRM</h1>
       </div>
     </div>
     <div class="header-right">
@@ -500,7 +574,7 @@ const HTML = `<!DOCTYPE html>
     <div class="period-selector" id="period-selector">
       <button class="period-btn" id="period-btn" onclick="toggleDropdown()">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        <span id="period-label">Todos os leads</span>
+        <span id="period-label">Este mês, até agora</span>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div class="period-dropdown hidden" id="period-dropdown">
@@ -525,6 +599,39 @@ const HTML = `<!DOCTYPE html>
       <input type="date" id="filter-to">
       <button class="btn-apply" onclick="applyCustom()">Aplicar</button>
     </div>
+    <div class="filter-sep"></div>
+
+    <div class="sel-selector" id="sel-responsible">
+      <span class="filter-label">Responsável:</span>
+      <button class="period-btn" id="btn-responsible" onclick="toggleSel('responsible',event)">
+        <span id="lbl-responsible">Todos</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="period-dropdown hidden" id="dd-responsible"></div>
+    </div>
+
+    <div class="filter-sep"></div>
+
+    <div class="sel-selector" id="sel-tag">
+      <span class="filter-label">Origem:</span>
+      <button class="period-btn" id="btn-tag" onclick="toggleSel('tag',event)">
+        <span id="lbl-tag">Todas</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="period-dropdown hidden" id="dd-tag"></div>
+    </div>
+
+    <div class="filter-sep"></div>
+
+    <div class="sel-selector" id="sel-product">
+      <span class="filter-label">Produto Jurídico:</span>
+      <button class="period-btn" id="btn-product" onclick="toggleSel('product',event)">
+        <span id="lbl-product">Todos</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="period-dropdown hidden" id="dd-product"></div>
+    </div>
+
     <button class="btn-reset" id="btn-reset" onclick="resetFilter()" title="Limpar filtro">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
     </button>
@@ -553,6 +660,69 @@ const HTML = `<!DOCTYPE html>
   <script>
     const btn = document.getElementById('btn-refresh');
     const overlay = document.getElementById('loading-overlay');
+    const SEL_NAMES = ['responsible', 'tag', 'product'];
+    let currentFilters = { responsible: new Set(), tag: new Set(), product: new Set() };
+
+    function toggleSel(name, e) {
+      e.stopPropagation();
+      SEL_NAMES.forEach(n => { if (n !== name) document.getElementById('dd-' + n).classList.add('hidden'); });
+      document.getElementById('dd-' + name).classList.toggle('hidden');
+    }
+
+    function toggleFilter(name, val) {
+      const set = currentFilters[name];
+      if (val === '') {
+        set.clear();
+      } else {
+        if (set.has(val)) set.delete(val); else set.add(val);
+      }
+      updateSelLabel(name);
+      document.querySelectorAll(\`#dd-\${name} .sel-opt\`).forEach(el => {
+        if (el.dataset.val === '') el.classList.toggle('active', set.size === 0);
+        else el.classList.toggle('active', set.has(el.dataset.val));
+      });
+      refresh(currentFrom, currentTo);
+    }
+
+    function updateSelLabel(name) {
+      const set = currentFilters[name];
+      const defaults = { responsible: 'Todos', tag: 'Todas', product: 'Todos' };
+      let label = defaults[name];
+      if (set.size > 0) {
+        if (set.size <= 2) {
+          const texts = [];
+          document.querySelectorAll(\`#dd-\${name} .sel-opt\`).forEach(el => {
+            if (el.dataset.val && set.has(el.dataset.val))
+              texts.push(el.querySelector('.sel-text')?.textContent?.trim() || el.dataset.val);
+          });
+          label = texts.join(', ');
+          if (label.length > 26) label = set.size + ' selecionados';
+        } else {
+          label = set.size + ' selecionados';
+        }
+      }
+      document.getElementById('lbl-' + name).textContent = label;
+    }
+
+    const CHK_SVG = '<svg class="sel-chk-icon" viewBox="0 0 10 8" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 4 7 9 1"/></svg>';
+
+    function populateSel(name, options) {
+      const dd = document.getElementById('dd-' + name);
+      if (!dd) return;
+      const defaultLabels = { responsible: 'Todos os responsáveis', tag: 'Todas as origens', product: 'Todos os produtos' };
+      const chk = \`<span class="sel-check">\${CHK_SVG}</span>\`;
+      let html = \`<div class="period-option sel-opt active" data-val="" onclick="toggleFilter('\${name}','')">\${chk}<span class="sel-text">\${defaultLabels[name]}</span></div>\`;
+      if (!options.length) {
+        html += \`<div class="period-option" style="opacity:0.45;cursor:default;font-size:0.8rem;padding-left:38px">Nenhuma opção encontrada</div>\`;
+      } else {
+        for (const opt of options) {
+          const val = typeof opt === 'object' ? opt.id : opt;
+          const lbl = typeof opt === 'object' ? opt.name : opt;
+          html += \`<div class="period-option sel-opt" data-val="\${val}" onclick="toggleFilter('\${name}',this.dataset.val)">\${chk}<span class="sel-text">\${lbl}</span></div>\`;
+        }
+      }
+      dd.innerHTML = html;
+    }
 
     function formatDate(d) {
       return d.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
@@ -651,6 +821,12 @@ const HTML = `<!DOCTYPE html>
 
       document.getElementById('pipelines-grid').innerHTML = buildGrid(pipelines, null);
       document.getElementById('updated-at').innerHTML = 'Atualizado em<br><strong>' + formatDate(new Date()) + '</strong>';
+
+      if (data.meta) {
+        populateSel('responsible', data.meta.responsibleOptions);
+        populateSel('tag', data.meta.tagOptions);
+        populateSel('product', data.meta.productOptions);
+      }
     }
 
     const PERIODS = {
@@ -681,7 +857,7 @@ const HTML = `<!DOCTYPE html>
       return { from: null, to: null };
     }
 
-    let currentPeriod = 'all';
+    let currentPeriod = 'month';
 
     function toggleDropdown() {
       const dd = document.getElementById('period-dropdown');
@@ -724,15 +900,26 @@ const HTML = `<!DOCTYPE html>
       document.getElementById('filter-from').value = '';
       document.getElementById('filter-to').value = '';
       document.querySelectorAll('.period-option').forEach(el => el.classList.remove('active'));
+      currentFilters = { responsible: new Set(), tag: new Set(), product: new Set() };
+      const defaults = { responsible: 'Todos', tag: 'Todas', product: 'Todos' };
+      SEL_NAMES.forEach(name => {
+        document.getElementById('lbl-' + name).textContent = defaults[name];
+        document.querySelectorAll(\`#dd-\${name} .sel-opt\`).forEach(el => el.classList.toggle('active', el.dataset.val === ''));
+      });
       refresh(null, null);
     }
 
-    // Fecha dropdown ao clicar fora
+    // Fecha dropdowns ao clicar fora
     document.addEventListener('click', (e) => {
       if (!document.getElementById('period-selector').contains(e.target)) {
         document.getElementById('period-dropdown').classList.add('hidden');
         document.getElementById('period-btn').classList.remove('open');
       }
+      SEL_NAMES.forEach(name => {
+        if (!document.getElementById('sel-' + name)?.contains(e.target)) {
+          document.getElementById('dd-' + name)?.classList.add('hidden');
+        }
+      });
     });
 
     async function refresh(from, to) {
@@ -745,6 +932,9 @@ const HTML = `<!DOCTYPE html>
         const params = new URLSearchParams();
         if (from) params.set('from', from);
         if (to)   params.set('to', to);
+        if (currentFilters.responsible.size) params.set('responsible_id', [...currentFilters.responsible].join(','));
+        if (currentFilters.tag.size)         params.set('tag',            [...currentFilters.tag].join(','));
+        if (currentFilters.product.size)     params.set('product',        [...currentFilters.product].join(','));
         const url = '/api/data' + (params.toString() ? '?' + params : '');
         const res = await fetch(url);
         if (!res.ok) throw new Error('Erro ' + res.status);
@@ -800,7 +990,11 @@ const HTML = `<!DOCTYPE html>
     }
 
     (async () => {
-      await refresh(null, null);
+      const { from, to } = getDates('month');
+      document.querySelectorAll('#period-dropdown .period-option').forEach(el => {
+        el.classList.toggle('active', el.textContent.trim() === PERIODS['month'].label);
+      });
+      await refresh(from, to);
       overlay.classList.add('hidden');
     })();
   </script>
@@ -816,7 +1010,12 @@ const server = http.createServer(async (req, res) => {
       const qs = new URL(req.url, "http://localhost").searchParams;
       const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00").getTime() / 1000) : null;
       const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59").getTime() / 1000) : null;
-      const data = await fetchData(from, to);
+      const filters = {
+        responsibleIds: qs.get("responsible_id") ? qs.get("responsible_id").split(",").filter(Boolean) : null,
+        tags:           qs.get("tag")            ? qs.get("tag").split(",").filter(Boolean)            : null,
+        products:       qs.get("product")        ? qs.get("product").split(",").filter(Boolean)        : null,
+      };
+      const data = await fetchData(from, to, filters);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(data));
     } catch (e) {
