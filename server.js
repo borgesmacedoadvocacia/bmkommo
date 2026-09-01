@@ -1118,7 +1118,10 @@ const HTML = `<!DOCTYPE html>
 </html>`;
 
 const server = http.createServer(async (req, res) => {
-  if (req.url === "/" || req.url === "/index.html") {
+  // A Central manda ?v=<selo> para furar o cache; compara so o caminho,
+  // senao "/?v=123" cai no 404 e o painel abre vazio ("Not found").
+  const rota = new URL(req.url, "http://localhost").pathname;
+  if (rota === "/" || rota === "/index.html") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(HTML);
   } else if (req.url.startsWith("/api/data")) {
