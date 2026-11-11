@@ -1,6 +1,7 @@
 const https = require("https");
 const http = require("http");
 const fs = require("fs");
+const zlib = require("zlib");
 
 // Carrega variáveis do arquivo .env
 try {
@@ -14,6 +15,15 @@ const TOKEN     = process.env.TOKEN;
 const SUBDOMAIN = process.env.SUBDOMAIN || "bmadvocacia";
 const PORT      = Number(process.env.PORT) || 3000;
 
+if (!TOKEN) console.warn("[aviso] TOKEN não definido — as chamadas ao Kommo vão falhar (HTTP 401).");
+
+// ── Cliente da API do Kommo ────────────────────────────────
+const kommoAgent = new https.Agent({ keepAlive: true, maxSockets: 4 }); // reaproveita a conexão TLS entre páginas
+const API_TIMEOUT_MS = 30000;
+const API_TENTATIVAS = 4;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function buildQuery(params) {
   return Object.entries(params)
     .filter(([, v]) => v !== null && v !== undefined)
@@ -21,7 +31,7 @@ function buildQuery(params) {
     .join("&");
 }
 
-function apiGet(urlPath, params = {}) {
+function apiGetOnce(urlPath, params = {}) {
   return new Promise((resolve, reject) => {
     const query = buildQuery(params);
     const fullPath = `/api/v4${urlPath}${query ? "?" + query : ""}`;
@@ -29,6 +39,7 @@ function apiGet(urlPath, params = {}) {
       hostname: `${SUBDOMAIN}.kommo.com`,
       path: fullPath,
       method: "GET",
+      agent: kommoAgent,
       headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
     };
     const req = https.request(options, (res) => {
@@ -36,79 +47,157 @@ function apiGet(urlPath, params = {}) {
       res.on("data", (c) => (data += c));
       res.on("end", () => {
         if (res.statusCode === 204) return resolve(null);
-        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+        if (res.statusCode !== 200) {
+          const err = new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`);
+          err.kommoStatus = res.statusCode;
+          return reject(err);
+        }
         try { resolve(JSON.parse(data)); } catch { reject(new Error("Resposta inválida")); }
       });
     });
+    req.setTimeout(API_TIMEOUT_MS, () => req.destroy(new Error("Tempo esgotado ao consultar o Kommo")));
     req.on("error", reject);
     req.end();
   });
 }
 
-let usersCache = null;
-async function getUsers() {
-  if (usersCache) return usersCache;
-  const data = await apiGet("/users", { limit: 250 });
-  usersCache = {};
-  for (const u of data?._embedded?.users || []) usersCache[u.id] = u.name;
-  return usersCache;
-}
-
-async function fetchStageLeads(statusId, pipelineId, from, to) {
-  const leads = [];
-  let page = 1;
-  const extra = {
-    "filter[is_deleted]": 0,
-    "filter[statuses][0][pipeline_id]": pipelineId,
-    "filter[statuses][0][status_id]": statusId,
-  };
-  while (true) {
-    let data;
-    try { data = await apiGet("/leads", { page, limit: 250, ...extra }); } catch { break; }
-    if (!data) break;
-    const batch = data?._embedded?.leads || [];
-    if (!batch.length) break;
-    leads.push(...batch);
-    if (batch.length < 250) break;
-    page++;
+// Repete em caso de limite de requisições (429), erro do servidor (5xx) ou falha de rede.
+// Erros 4xx (token inválido etc.) não adiantam repetir e sobem na hora.
+async function apiGet(urlPath, params = {}) {
+  for (let tentativa = 1; ; tentativa++) {
+    try {
+      return await apiGetOnce(urlPath, params);
+    } catch (e) {
+      const st = e.kommoStatus;
+      const repetivel = !st || st === 429 || st >= 500;
+      if (!repetivel || tentativa >= API_TENTATIVAS) throw e;
+      await sleep(500 * 2 ** (tentativa - 1));
+    }
   }
-  return leads.filter(l => {
-    if (from && l.created_at < from) return false;
-    if (to   && l.created_at > to)   return false;
-    return true;
-  });
 }
 
+// ── Caches em memória ──────────────────────────────────────
+const TTL_USERS     = 10 * 60 * 1000;
+const TTL_PIPELINES = 5 * 60 * 1000;
+const TTL_LEADS     = 60 * 1000;       // números do painel: no máximo 1 min de defasagem
+const TTL_LEADS_MAX = 15 * 60 * 1000;  // lista da etapa reaproveita a mesma leitura dos números
+const MAX_LEADS_CACHE = 3;
+
+function cached(ttl, loader) {
+  let at = 0, promise = null;
+  return (fresh = false) => {
+    if (!fresh && promise && Date.now() - at < ttl) return promise;
+    const p = loader();
+    at = Date.now(); promise = p;
+    p.catch(() => { if (promise === p) promise = null; });
+    return p;
+  };
+}
+
+const getUsers = cached(TTL_USERS, async () => {
+  const data = await apiGet("/users", { limit: 250 });
+  const users = {};
+  for (const u of data?._embedded?.users || []) users[u.id] = u.name;
+  return users;
+});
+
+const getPipelines = cached(TTL_PIPELINES, async () => {
+  const data = await apiGet("/leads/pipelines", { limit: 250 });
+  return data?._embedded?.pipelines || [];
+});
+
+const ORIGIN_KEYS  = ["origem", "origin", "fonte", "source"];
+const PRODUCT_KEYS = ["produto", "product", "serviço", "servico", "área", "area", "tipo de serv"];
+const UNFILLED = "Não preenchido";
+
+function fieldValues(lead, keys) {
+  const out = [];
+  for (const cf of lead.custom_fields_values || []) {
+    const fname = (cf.field_name || "").toLowerCase();
+    if (!keys.some(k => fname.includes(k))) continue;
+    for (const v of cf.values || []) if (v.value) out.push(v.value);
+  }
+  return out;
+}
+
+// Guarda só o que o painel usa (os campos personalizados completos pesam muito no cache).
+function slimLead(l) {
+  return {
+    id: l.id,
+    name: l.name || "(sem nome)",
+    responsible_user_id: l.responsible_user_id,
+    created_at: l.created_at,
+    pipeline_id: l.pipeline_id,
+    status_id: l.status_id,
+    origins: fieldValues(l, ORIGIN_KEYS).map(String),
+    products: fieldValues(l, PRODUCT_KEYS).filter(v => typeof v === "string"),
+  };
+}
+
+// Qualquer falha no meio da paginação derruba a consulta inteira:
+// é melhor mostrar erro do que números parciais como se fossem o total.
 async function fetchAllLeads(from, to) {
   const leads = [];
-  let page = 1;
-  const extra = {};
+  const extra = { "filter[is_deleted]": 0 };
   if (from) extra["filter[created_at][from]"] = from;
   if (to)   extra["filter[created_at][to]"]   = to;
-  while (true) {
-    let data;
-    try { data = await apiGet("/leads", { page, limit: 250, "filter[is_deleted]": 0, ...extra }); } catch { break; }
-    if (!data) break;
+  for (let page = 1; ; page++) {
+    const data = await apiGet("/leads", { page, limit: 250, ...extra });
     const batch = data?._embedded?.leads || [];
-    if (!batch.length) break;
-    leads.push(...batch);
+    for (const l of batch) leads.push(slimLead(l));
     if (batch.length < 250) break;
-    page++;
   }
   return leads;
 }
 
-async function fetchData(from, to, filters = {}) {
+const leadsCache = new Map(); // "from|to" -> { at, promise }
+function getLeads(from, to, maxAge = TTL_LEADS) {
+  const key = `${from}|${to}`;
+  const hit = leadsCache.get(key);
+  if (hit && Date.now() - hit.at < maxAge) return hit.promise;
+  const promise = fetchAllLeads(from, to);
+  leadsCache.delete(key);
+  leadsCache.set(key, { at: Date.now(), promise });
+  promise.catch(() => { if (leadsCache.get(key)?.promise === promise) leadsCache.delete(key); });
+  for (const [k, v] of leadsCache) {
+    if (Date.now() - v.at >= TTL_LEADS_MAX || leadsCache.size > MAX_LEADS_CACHE) leadsCache.delete(k);
+    else break;
+  }
+  return promise;
+}
+
+function applyFilters(leads, { responsibleIds, tags, products } = {}) {
+  let out = leads;
+  if (responsibleIds?.length) {
+    const ids = new Set(responsibleIds);
+    out = out.filter(l => ids.has(String(l.responsible_user_id)));
+  }
+  if (tags?.length) {
+    const wantUnfilled = tags.includes(UNFILLED);
+    const wanted = new Set(tags.filter(t => t !== UNFILLED));
+    out = out.filter(l => (l.origins.length === 0 ? wantUnfilled : l.origins.some(o => wanted.has(o))));
+  }
+  if (products?.length) {
+    const wanted = new Set(products);
+    out = out.filter(l => l.products.some(p => wanted.has(p)));
+  }
+  return out;
+}
+
+// Etapa é identificada por "funil:etapa". Só o id da etapa não basta: no Kommo
+// as etapas de ganho (142) e perda (143) têm o MESMO id em todos os funis.
+const stageKey = (pipelineId, statusId) => `${pipelineId}:${statusId}`;
+
+async function fetchData(from, to, filters = {}, fresh = false) {
   const label = from || to ? `de ${from} até ${to}` : "todos";
   console.log(`[kommo] Buscando dados (${label})...`);
-  const [pipelinesRes, leads] = await Promise.all([
-    apiGet("/leads/pipelines", { limit: 250 }),
-    fetchAllLeads(from, to),
+  const [pipelines, leads, usersMap] = await Promise.all([
+    getPipelines(fresh),
+    getLeads(from, to, fresh ? 0 : TTL_LEADS),
+    getUsers(),
   ]);
-  const pipelines = pipelinesRes?._embedded?.pipelines || [];
   console.log(`[kommo] ${pipelines.length} funis, ${leads.length} leads`);
 
-  const stageMap = {};
   const pipelineData = {};
 
   const PIPELINES_EXCLUIDOS = ["Processual", "Instagram"];
@@ -118,14 +207,13 @@ async function fetchData(from, to, filters = {}) {
     pipelineData[pipeline.id] = {
       name: pipeline.name,
       total_leads: 0,
-      stages: Object.fromEntries(statuses.map((s) => {
-        stageMap[s.id] = pipeline.id;
-        return [s.id, { name: s.name, color: s.color || "#6366f1", type: s.type || 0, sort: s.sort || 0, leads: 0 }];
-      })),
+      stages: Object.fromEntries(statuses.map((s) =>
+        [s.id, { name: s.name, color: s.color || "#6366f1", type: s.type || 0, sort: s.sort || 0, leads: 0 }]
+      )),
     };
   }
 
-  // Mapa pipeline_name -> { stage_name -> [stageId, ...] }
+  // Mapa pipeline_name -> { stage_name -> ["funil:etapa", ...] }
   // Usa pipelineData (pipelines exibidos) para garantir mapeamento correto,
   // mesmo que haja múltiplos pipelines com o mesmo nome no Kommo.
   const pipelineByName = {};
@@ -135,7 +223,7 @@ async function fetchData(from, to, filters = {}) {
     for (const [sid, stage] of Object.entries(pdata.stages)) {
       const sname = stage.name.trim();
       if (!pipelineByName[name].stages[sname]) pipelineByName[name].stages[sname] = [];
-      pipelineByName[name].stages[sname].push(Number(sid));
+      pipelineByName[name].stages[sname].push(stageKey(pid, sid));
     }
   }
 
@@ -184,34 +272,19 @@ async function fetchData(from, to, filters = {}) {
     "[API] Follow Up":     ["FUP 1 - Qualificação", "FUP 2 - Qualificação", "FUP 3 - Qualificação", "FUP 4 - Qualificação", "FUP 5 - Qualificação", "FUP 6 - Qualificação", "FUP 7 - Qualificação", "FUP 8 - Qualificação", "Closed - won", "Closed - lost"],
   });
 
+
   // ── Coleta meta para dropdowns ──────────────────────────
-  const usersMap = await getUsers();
   const responsibleMap = new Map();
   const tagSet = new Set();
   const productSet = new Set();
-  const ORIGIN_KEYS  = ["origem", "origin", "fonte", "source"];
-  const PRODUCT_KEYS = ["produto", "product", "serviço", "servico", "área", "area", "tipo de serv"];
   let hasUnfilled = false;
 
   for (const lead of leads) {
     const uid = lead.responsible_user_id;
     if (uid && usersMap[uid]) responsibleMap.set(uid, usersMap[uid]);
-
-    // Origem: campo customizado
-    const originVals = (lead.custom_fields_values || [])
-      .filter(cf => ORIGIN_KEYS.some(k => (cf.field_name || "").toLowerCase().includes(k)))
-      .flatMap(cf => (cf.values || []).map(v => v.value).filter(Boolean));
-    if (originVals.length) originVals.forEach(v => tagSet.add(v));
+    if (lead.origins.length) lead.origins.forEach(v => tagSet.add(v));
     else hasUnfilled = true;
-
-    for (const cf of lead.custom_fields_values || []) {
-      const fname = (cf.field_name || "").toLowerCase();
-      if (PRODUCT_KEYS.some(k => fname.includes(k))) {
-        for (const v of cf.values || []) {
-          if (v.value && typeof v.value === "string") productSet.add(v.value);
-        }
-      }
-    }
+    lead.products.forEach(v => productSet.add(v));
   }
 
   const meta = {
@@ -219,39 +292,24 @@ async function fetchData(from, to, filters = {}) {
       .map(([id, name]) => ({ id: String(id), name }))
       .filter(u => u.name !== "Atendimento Jurídico")
       .sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
-    tagOptions: (hasUnfilled ? ["Não preenchido"] : [])
+    tagOptions: (hasUnfilled ? [UNFILLED] : [])
       .concat([...tagSet].sort((a, b) => a.localeCompare(b, "pt-BR"))),
     productOptions: [...productSet].sort((a, b) => a.localeCompare(b, "pt-BR")),
   };
 
-  // ── Aplica filtros adicionais ────────────────────────────
-  const { responsibleIds, tags, products } = filters;
-  let filteredLeads = leads;
-  if (responsibleIds?.length) filteredLeads = filteredLeads.filter(l => responsibleIds.includes(String(l.responsible_user_id)));
-  if (tags?.length) {
-    const wantUnfilled = tags.includes("Não preenchido");
-    const normalTags   = tags.filter(t => t !== "Não preenchido");
-    filteredLeads = filteredLeads.filter(l => {
-      const originVals = (l.custom_fields_values || [])
-        .filter(cf => ORIGIN_KEYS.some(k => (cf.field_name || "").toLowerCase().includes(k)))
-        .flatMap(cf => (cf.values || []).map(v => v.value).filter(Boolean));
-      if (originVals.length === 0) return wantUnfilled;
-      return normalTags.some(t => originVals.includes(t));
-    });
-  }
-  if (products?.length) filteredLeads = filteredLeads.filter(l => l.custom_fields_values?.some(cf => cf.values?.some(v => products.includes(v.value))));
-
-  for (const lead of filteredLeads) {
+  // ── Aplica filtros adicionais e conta ────────────────────
+  for (const lead of applyFilters(leads, filters)) {
     const pid = lead.pipeline_id;
     const sid = lead.status_id;
-    if (pipelineData[pid]?.stages[sid] !== undefined) {
-      pipelineData[pid].stages[sid].leads++;
-      pipelineData[pid].total_leads++;
-    }
-    if (triagemIds.has(sid))      specialCounts["Responderam a Triagem"]++;
-    if (elegiveisIds.has(sid))    specialCounts["Elegíveis"]++;
-    if (qualificacaoIds.has(sid)) specialCounts["Responderam a Qualificação"]++;
-    if (qualificadosIds.has(sid)) specialCounts["Qualificados (Aguardando Documentação)"]++;
+    const stage = pipelineData[pid]?.stages[sid];
+    if (!stage) continue; // funil oculto ou etapa removida
+    stage.leads++;
+    pipelineData[pid].total_leads++;
+    const key = stageKey(pid, sid);
+    if (triagemIds.has(key))      specialCounts["Responderam a Triagem"]++;
+    if (elegiveisIds.has(key))    specialCounts["Elegíveis"]++;
+    if (qualificacaoIds.has(key)) specialCounts["Responderam a Qualificação"]++;
+    if (qualificadosIds.has(key)) specialCounts["Qualificados (Aguardando Documentação)"]++;
   }
 
   const specialIds = {
@@ -633,7 +691,7 @@ const HTML = `<!DOCTYPE html>
       </div>
     </div>
     <div class="header-right">
-      <button id="btn-refresh" onclick="refresh(currentFrom, currentTo)">
+      <button id="btn-refresh" onclick="refresh(currentFrom, currentTo, true)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="23 4 23 10 17 10"></polyline>
           <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
@@ -655,16 +713,16 @@ const HTML = `<!DOCTYPE html>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
           <div class="period-dropdown hidden" id="period-dropdown">
-            <div class="period-option" onclick="selectPeriod('all')">Todos os leads</div>
-            <div class="period-option" onclick="selectPeriod('today')">Hoje</div>
-            <div class="period-option" onclick="selectPeriod('yesterday')">Ontem</div>
-            <div class="period-option" onclick="selectPeriod('week')">Esta semana</div>
-            <div class="period-option" onclick="selectPeriod('month')">Este mês, até agora</div>
-            <div class="period-option" onclick="selectPeriod('year')">Este ano, até agora</div>
-            <div class="period-option" onclick="selectPeriod('last_month')">Mês passado</div>
-            <div class="period-option" onclick="selectPeriod('last_year')">Ano passado</div>
+            <div class="period-option" data-period="all" onclick="selectPeriod('all')">Todos os leads</div>
+            <div class="period-option" data-period="today" onclick="selectPeriod('today')">Hoje</div>
+            <div class="period-option" data-period="yesterday" onclick="selectPeriod('yesterday')">Ontem</div>
+            <div class="period-option" data-period="week" onclick="selectPeriod('week')">Esta semana</div>
+            <div class="period-option" data-period="month" onclick="selectPeriod('month')">Este mês, até agora</div>
+            <div class="period-option" data-period="year" onclick="selectPeriod('year')">Este ano, até agora</div>
+            <div class="period-option" data-period="last_month" onclick="selectPeriod('last_month')">Mês passado</div>
+            <div class="period-option" data-period="last_year" onclick="selectPeriod('last_year')">Ano passado</div>
             <div class="period-divider"></div>
-            <div class="period-option period-custom-opt" onclick="selectPeriod('custom')">
+            <div class="period-option period-custom-opt" data-period="custom" onclick="selectPeriod('custom')">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
               Período fixo (personalizado)
             </div>
@@ -739,6 +797,14 @@ const HTML = `<!DOCTYPE html>
     const overlay = document.getElementById('loading-overlay');
     const SEL_NAMES = ['responsible', 'tag', 'product'];
     let currentFilters = { responsible: new Set(), tag: new Set(), product: new Set() };
+    // Rótulo de cada opção já vista, para manter visível um filtro selecionado
+    // mesmo quando ele não aparece nas opções do período atual.
+    const selLabels = { responsible: {}, tag: {}, product: {} };
+
+    // Nomes de leads, etapas e campos vêm do Kommo (texto livre): sempre escapar antes de pôr no HTML.
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
 
     function positionDropdown(btn, dd) {
       if (window.innerWidth <= 640) {
@@ -803,14 +869,17 @@ const HTML = `<!DOCTYPE html>
       if (!dd) return;
       const defaultLabels = { responsible: 'Todos os responsáveis', tag: 'Todas as origens', product: 'Todos os produtos' };
       const chk = \`<span class="sel-check">\${CHK_SVG}</span>\`;
-      let html = \`<div class="period-option sel-opt active" data-val="" onclick="toggleFilter('\${name}','')">\${chk}<span class="sel-text">\${defaultLabels[name]}</span></div>\`;
-      if (!options.length) {
+      const set = currentFilters[name];
+      const opts = options.map(opt => typeof opt === 'object' ? { val: String(opt.id), lbl: opt.name } : { val: opt, lbl: opt });
+      for (const o of opts) selLabels[name][o.val] = o.lbl;
+      const presentes = new Set(opts.map(o => o.val));
+      for (const val of set) if (!presentes.has(val)) opts.push({ val, lbl: selLabels[name][val] || val });
+      let html = \`<div class="period-option sel-opt\${set.size ? '' : ' active'}" data-val="" onclick="toggleFilter('\${name}','')">\${chk}<span class="sel-text">\${defaultLabels[name]}</span></div>\`;
+      if (!opts.length) {
         html += \`<div class="period-option" style="opacity:0.45;cursor:default;font-size:0.8rem;padding-left:38px">Nenhuma opção encontrada</div>\`;
       } else {
-        for (const opt of options) {
-          const val = typeof opt === 'object' ? opt.id : opt;
-          const lbl = typeof opt === 'object' ? opt.name : opt;
-          html += \`<div class="period-option sel-opt" data-val="\${val}" onclick="toggleFilter('\${name}',this.dataset.val)">\${chk}<span class="sel-text">\${lbl}</span></div>\`;
+        for (const o of opts) {
+          html += \`<div class="period-option sel-opt\${set.has(o.val) ? ' active' : ''}" data-val="\${esc(o.val)}" onclick="toggleFilter('\${name}',this.dataset.val)">\${chk}<span class="sel-text">\${esc(o.lbl)}</span></div>\`;
         }
       }
       dd.innerHTML = html;
@@ -829,7 +898,7 @@ const HTML = `<!DOCTYPE html>
     let activeFilter = null;
 
     function buildGrid(pipelines, filterIds) {
-      const idSet = filterIds ? new Set(filterIds.map(Number)) : null;
+      const idSet = filterIds ? new Set(filterIds) : null; // chaves "funil:etapa"
       let grid = '';
       for (const [pid, pdata] of Object.entries(pipelines)) {
         let rows = '';
@@ -837,23 +906,23 @@ const HTML = `<!DOCTYPE html>
         const sortedStages = Object.entries(pdata.stages).sort((a, b) => (a[1].sort || 0) - (b[1].sort || 0));
         for (const [sid, stage] of sortedStages) {
           if (stage.leads === 0) continue;
-          if (idSet && !idSet.has(Number(sid))) continue;
+          if (idSet && !idSet.has(pid + ':' + sid)) continue;
           filteredTotal += stage.leads;
         }
         if (filteredTotal === 0) continue;
         for (const [sid, stage] of sortedStages) {
           if (stage.leads === 0) continue;
-          if (idSet && !idSet.has(Number(sid))) continue;
+          if (idSet && !idSet.has(pid + ':' + sid)) continue;
           const pct = filteredTotal > 0 ? (stage.leads / filteredTotal * 100).toFixed(1) : 0;
           const color = colorValid(stage.color);
           const badge = stage.type === 142
             ? '<span class="badge badge-won">Ganho</span>'
             : stage.type === 143 ? '<span class="badge badge-lost">Perdido</span>' : '';
           rows += \`
-            <div class="stage-row" onclick="openPanel(\${sid}, \${pid}, '\${stage.name.replace(/'/g,"\\\\'")}', '\${pdata.name.replace(/'/g,"\\\\'")}', \${filteredTotal})">
+            <div class="stage-row" data-sid="\${esc(sid)}" data-pid="\${esc(pid)}" data-stage="\${esc(stage.name)}" data-pipeline="\${esc(pdata.name)}" data-total="\${stage.leads}">
               <div class="stage-left">
                 <div class="stage-dot" style="background:\${color}"></div>
-                <span class="stage-name">\${stage.name} \${badge}</span>
+                <span class="stage-name">\${esc(stage.name)} \${badge}</span>
               </div>
               <div class="stage-right">
                 <div class="bar-wrap"><div class="bar-fill" style="width:\${pct}%;background:\${color}"></div></div>
@@ -864,7 +933,7 @@ const HTML = `<!DOCTYPE html>
         grid += \`
           <div class="pipeline-card">
             <div class="pipeline-header">
-              <h3>\${pdata.name}</h3>
+              <h3>\${esc(pdata.name)}</h3>
               <span class="meta-chip">\${filteredTotal} leads</span>
             </div>
             <div class="stages-list">\${rows}</div>
@@ -890,7 +959,6 @@ const HTML = `<!DOCTYPE html>
       allData = data;
       activeFilter = null;
       const { pipelines, totalLeads, specialCounts } = data;
-      const activePipelines = Object.values(pipelines).filter(p => p.total_leads > 0).length;
 
       const sc = specialCounts || {};
       const specials = [
@@ -917,8 +985,8 @@ const HTML = `<!DOCTYPE html>
             const barColor  = pctNum === null ? 'var(--muted)' : pctNum >= 80 ? '#4ade80' : pctNum >= 50 ? '#facc15' : pctNum >= 20 ? '#fb923c' : '#f87171';
             prevVal = val ?? prevVal;
             return \`
-              <div class="summary-card special-card" data-key="\${key}" onclick="selectSpecialCard('\${key}')" style="border-top:4px solid \${barColor}">
-                <div class="label">\${key}</div>
+              <div class="summary-card special-card" data-key="\${esc(key)}" onclick="selectSpecialCard(this.dataset.key)" style="border-top:4px solid \${barColor}">
+                <div class="label">\${esc(key)}</div>
                 <div class="card-bottom">
                   \${pctStr !== null ? \`<span class="card-pct \${pctClass}">\${pctStr}%&nbsp;→</span>\` : ''}
                   <div class="value">\${val ?? '—'}</div>
@@ -982,15 +1050,17 @@ const HTML = `<!DOCTYPE html>
       if (!dd.classList.contains('hidden')) positionDropdown(pb, dd);
     }
 
+    function markPeriod(key) {
+      document.querySelectorAll('#period-dropdown .period-option').forEach(el => el.classList.toggle('active', el.dataset.period === key));
+    }
+
     function selectPeriod(key) {
       currentPeriod = key;
       document.getElementById('period-dropdown').classList.add('hidden');
       document.getElementById('period-btn').classList.remove('open');
       document.getElementById('period-label').textContent = PERIODS[key].label;
 
-      // highlight active
-      document.querySelectorAll('.period-option').forEach(el => el.classList.remove('active'));
-      event.currentTarget.classList.add('active');
+      markPeriod(key);
 
       const customDates = document.getElementById('custom-dates');
       if (key === 'custom') {
@@ -1015,7 +1085,7 @@ const HTML = `<!DOCTYPE html>
       document.getElementById('custom-dates').classList.add('hidden');
       document.getElementById('filter-from').value = '';
       document.getElementById('filter-to').value = '';
-      document.querySelectorAll('.period-option').forEach(el => el.classList.remove('active'));
+      markPeriod('all');
       currentFilters = { responsible: new Set(), tag: new Set(), product: new Set() };
       const defaults = { responsible: 'Todos', tag: 'Todas', product: 'Todos' };
       SEL_NAMES.forEach(name => {
@@ -1038,40 +1108,59 @@ const HTML = `<!DOCTYPE html>
       });
     });
 
-    async function refresh(from, to) {
+    // Período + filtros atuais, no formato que o servidor espera.
+    function queryParams() {
+      const params = new URLSearchParams();
+      if (currentFrom) params.set('from', currentFrom);
+      if (currentTo)   params.set('to', currentTo);
+      for (const v of currentFilters.responsible) params.append('responsible_id', v);
+      for (const v of currentFilters.tag)         params.append('tag', v);
+      for (const v of currentFilters.product)     params.append('product', v);
+      return params;
+    }
+
+    let refreshSeq = 0;
+    async function refresh(from, to, fresh) {
       currentFrom = from || null;
       currentTo   = to   || null;
+      const seq = ++refreshSeq; // cliques rápidos: só a resposta do pedido mais recente vale
       closePanel();
       btn.disabled = true;
       btn.classList.add('loading');
       try {
-        const params = new URLSearchParams();
-        if (from) params.set('from', from);
-        if (to)   params.set('to', to);
-        if (currentFilters.responsible.size) params.set('responsible_id', [...currentFilters.responsible].join(','));
-        if (currentFilters.tag.size)         params.set('tag',            [...currentFilters.tag].join(','));
-        if (currentFilters.product.size)     params.set('product',        [...currentFilters.product].join(','));
-        const url = '/api/data' + (params.toString() ? '?' + params : '');
-        const res = await fetch(url);
-        if (!res.ok) throw new Error('Erro ' + res.status);
-        const data = await res.json();
+        const params = queryParams();
+        if (fresh) params.set('fresh', '1');
+        const res = await fetch('/api/data' + (params.toString() ? '?' + params : ''));
+        const data = await res.json().catch(() => null);
+        if (seq !== refreshSeq) return;
+        if (!res.ok || !data) throw new Error((data && data.error) || ('Erro ' + res.status));
         render(data);
       } catch (e) {
-        alert('Erro ao atualizar: ' + e.message);
+        if (seq === refreshSeq) alert('Erro ao atualizar: ' + e.message);
       } finally {
-        btn.disabled = false;
-        btn.classList.remove('loading');
+        if (seq === refreshSeq) {
+          btn.disabled = false;
+          btn.classList.remove('loading');
+        }
       }
     }
 
     let currentFrom = null, currentTo = null;
 
+    let panelSeq = 0;
     function closePanel() {
+      panelSeq++;
       document.getElementById('leads-panel').classList.remove('open');
       document.getElementById('panel-overlay').classList.remove('open');
     }
 
+    document.getElementById('pipelines-grid').addEventListener('click', (e) => {
+      const row = e.target.closest('.stage-row');
+      if (row) openPanel(row.dataset.sid, row.dataset.pid, row.dataset.stage, row.dataset.pipeline, Number(row.dataset.total));
+    });
+
     async function openPanel(sid, pid, stageName, pipelineName, total) {
+      const seq = ++panelSeq;
       document.getElementById('panel-title').textContent = stageName;
       document.getElementById('panel-subtitle').textContent = pipelineName + ' · ' + total + ' lead' + (total !== 1 ? 's' : '');
       document.getElementById('panel-body').innerHTML = '<div class="panel-loading">Carregando leads...</div>';
@@ -1079,11 +1168,13 @@ const HTML = `<!DOCTYPE html>
       document.getElementById('panel-overlay').classList.add('open');
 
       try {
-        const params = new URLSearchParams({ status_id: sid, pipeline_id: pid });
-        if (currentFrom) params.set('from', currentFrom);
-        if (currentTo)   params.set('to', currentTo);
+        const params = queryParams();
+        params.set('status_id', sid);
+        params.set('pipeline_id', pid);
         const res = await fetch('/api/stage-leads?' + params);
+        if (!res.ok) throw new Error('Erro ' + res.status);
         const leads = await res.json();
+        if (seq !== panelSeq) return;
 
         if (!leads.length) {
           document.getElementById('panel-body').innerHTML = '<div class="panel-loading">Nenhum lead encontrado.</div>';
@@ -1094,22 +1185,21 @@ const HTML = `<!DOCTYPE html>
         document.getElementById('panel-body').innerHTML = leads.map(l => \`
           <div class="lead-item">
             <div>
-              <a href="https://${SUBDOMAIN}.kommo.com/leads/detail/\${l.id}" target="_blank">\${l.name}</a>
-              <div class="lead-meta">\${l.responsible}</div>
+              <a href="https://${SUBDOMAIN}.kommo.com/leads/detail/\${encodeURIComponent(l.id)}" target="_blank" rel="noopener">\${esc(l.name)}</a>
+              <div class="lead-meta">\${esc(l.responsible)}</div>
             </div>
             <div class="lead-date">\${fmtDate(l.created_at)}</div>
           </div>
         \`).join('');
       } catch (e) {
+        if (seq !== panelSeq) return;
         document.getElementById('panel-body').innerHTML = '<div class="panel-loading">Erro ao carregar leads.</div>';
       }
     }
 
     (async () => {
       const { from, to } = getDates('month');
-      document.querySelectorAll('#period-dropdown .period-option').forEach(el => {
-        el.classList.toggle('active', el.textContent.trim() === PERIODS['month'].label);
-      });
+      markPeriod('month');
       await refresh(from, to);
       overlay.classList.add('hidden');
     })();
@@ -1117,63 +1207,90 @@ const HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+const HTML_BUF  = Buffer.from(HTML, "utf8");
+const HTML_GZIP = zlib.gzipSync(HTML_BUF);
+
+function send(req, res, status, type, body, gzipped) {
+  const headers = { "Content-Type": type };
+  if (/\bgzip\b/.test(req.headers["accept-encoding"] || "")) {
+    const gz = gzipped || (body.length > 1024 ? zlib.gzipSync(body) : null);
+    if (gz) { body = gz; headers["Content-Encoding"] = "gzip"; headers["Vary"] = "Accept-Encoding"; }
+  }
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+const sendJson = (req, res, status, obj) =>
+  send(req, res, status, "application/json; charset=utf-8", Buffer.from(JSON.stringify(obj), "utf8"));
+
+function badRequest(msg) {
+  const e = new Error(msg);
+  e.httpStatus = 400;
+  return e;
+}
+
+// Datas chegam como AAAA-MM-DD no horário de Brasília (UTC-3):
+// meia-noite no Brasil = 03:00 UTC, por isso somamos 3h ao instante UTC.
+const BRT_OFFSET = 3 * 3600;
+function parseDay(value, endOfDay) {
+  if (!value) return null;
+  const ms = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(value + (endOfDay ? "T23:59:59Z" : "T00:00:00Z")).getTime()
+    : NaN;
+  if (Number.isNaN(ms)) throw badRequest("Data inválida: " + value);
+  return Math.floor(ms / 1000) + BRT_OFFSET;
+}
+
+function parseQuery(qs) {
+  const list = (name) => { const v = qs.getAll(name).filter(Boolean); return v.length ? v : null; };
+  return {
+    from: parseDay(qs.get("from"), false),
+    to:   parseDay(qs.get("to"), true),
+    filters: {
+      responsibleIds: list("responsible_id"),
+      tags:           list("tag"),
+      products:       list("product"),
+    },
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   // A Central manda ?v=<selo> para furar o cache; compara so o caminho,
   // senao "/?v=123" cai no 404 e o painel abre vazio ("Not found").
-  const rota = new URL(req.url, "http://localhost").pathname;
-  if (rota === "/" || rota === "/index.html") {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(HTML);
-  } else if (req.url.startsWith("/api/data")) {
-    try {
-      const qs = new URL(req.url, "http://localhost").searchParams;
-      // Ajuste de fuso horário: Brasil é UTC-3 (3h atrás do UTC)
-      // Somamos 3h ao from/to em UTC para representar meia-noite no Brasil
-      const BRT_OFFSET = 3 * 3600;
-      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00Z").getTime() / 1000) + BRT_OFFSET : null;
-      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59Z").getTime() / 1000) + BRT_OFFSET : null;
-      if (from) console.log(`[api/data] from=${from} (${new Date(from * 1000).toISOString()}) to=${to} (${new Date(to * 1000).toISOString()})`);
-      const filters = {
-        responsibleIds: qs.get("responsible_id") ? qs.get("responsible_id").split(",").filter(Boolean) : null,
-        tags:           qs.get("tag")            ? qs.get("tag").split(",").filter(Boolean)            : null,
-        products:       qs.get("product")        ? qs.get("product").split(",").filter(Boolean)        : null,
-      };
-      const data = await fetchData(from, to, filters);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(data));
-    } catch (e) {
-      console.error("[erro]", e.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: e.message }));
-    }
-  } else if (req.url.startsWith("/api/stage-leads")) {
-    try {
-      const qs = new URL(req.url, "http://localhost").searchParams;
+  const url  = new URL(req.url, "http://localhost");
+  const rota = url.pathname;
+  const qs   = url.searchParams;
+  try {
+    if (rota === "/" || rota === "/index.html") {
+      send(req, res, 200, "text/html; charset=utf-8", HTML_BUF, HTML_GZIP);
+    } else if (rota === "/api/data") {
+      const { from, to, filters } = parseQuery(qs);
+      const data = await fetchData(from, to, filters, qs.get("fresh") === "1");
+      sendJson(req, res, 200, data);
+    } else if (rota === "/api/stage-leads") {
+      // Usa a mesma leitura (período + filtros) que gerou os números do painel,
+      // então a lista sempre bate com a contagem da etapa.
+      const { from, to, filters } = parseQuery(qs);
       const statusId   = qs.get("status_id");
       const pipelineId = qs.get("pipeline_id");
-      const from = qs.get("from") ? Math.floor(new Date(qs.get("from") + "T00:00:00Z").getTime() / 1000) : null;
-      const to   = qs.get("to")   ? Math.floor(new Date(qs.get("to") + "T23:59:59Z").getTime() / 1000) : null;
-      const [leads, users] = await Promise.all([
-        fetchStageLeads(statusId, pipelineId, from, to),
-        getUsers(),
-      ]);
-      const result = leads.map(l => ({
-        id: l.id,
-        name: l.name || "(sem nome)",
-        responsible: users[l.responsible_user_id] || "—",
-        created_at: l.created_at,
-        price: l.price || 0,
-      }));
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(result));
-    } catch (e) {
-      console.error("[erro stage-leads]", e.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: e.message }));
+      if (!statusId || !pipelineId) throw badRequest("status_id e pipeline_id são obrigatórios");
+      const [leads, users] = await Promise.all([getLeads(from, to, TTL_LEADS_MAX), getUsers()]);
+      const result = applyFilters(leads, filters)
+        .filter(l => String(l.pipeline_id) === pipelineId && String(l.status_id) === statusId)
+        .map(l => ({
+          id: l.id,
+          name: l.name,
+          responsible: users[l.responsible_user_id] || "—",
+          created_at: l.created_at,
+        }));
+      sendJson(req, res, 200, result);
+    } else {
+      res.writeHead(404);
+      res.end("Not found");
     }
-  } else {
-    res.writeHead(404);
-    res.end("Not found");
+  } catch (e) {
+    console.error(`[erro ${rota}]`, e.message);
+    sendJson(req, res, e.httpStatus || 500, { error: e.message });
   }
 });
 
